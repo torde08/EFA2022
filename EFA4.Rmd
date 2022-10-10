@@ -1,0 +1,207 @@
+|                                    |
+|------------------------------------|
+| title: Exploratory Factor Analysis |
+| author: Todd Barnes                |
+| date: `r Sys.Date()`               |
+| output: github_document            |
+
+```{=html}
+<style type="text/css">
+
+body{ /* Normal  */
+      font-size: 12px;
+  }
+td {  /* Table  */
+  font-size: 12px;
+}
+h1.title {
+  font-size: 12px;
+  color: DarkRed;
+}
+h1 { /* Header 1 */
+  font-size: 12px;
+  color: DarkGray;
+}
+h2 { /* Header 2 */
+    font-size: 12px;
+  color: DarkGray;
+}
+h3 { /* Header 3 */
+  font-size: 12px;
+  font-family: "Times New Roman", Times, serif;
+  color: DarkGray;
+}
+code.r{ /* Code block */
+    font-size: 10px;
+}
+pre { /* Code block - determines code spacing between lines */
+    font-size: 12px;
+}
+</style>
+```
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE )
+```
+
+```{r, include=FALSE}
+setwd("C:/Users/todda/Documents/Data Repository/EFA2022")
+ypix1<- read.csv("ypixefa20200515.csv",header = TRUE, sep = ",", na.strings =)
+ypixdes<- read.csv("YPIXdescriptive.csv", header=TRUE,sep = ",", na.strings = "Unknown")
+
+#library
+library(psych)
+library(mice)
+library(GPArotation)
+library(lavaan)
+library(dplyr)
+library(tidyr)
+library(stats)
+library(naniar)
+library(table1)
+
+#relabel "99" as NA if needed
+ypix2<-na_if(ypix1,99)
+
+#exclude demographic and overall variables
+ypix3<- ypix1[, c(1:28)]
+str(ypix3)
+
+```
+
+## About this project
+
+This analysis was preceded by a literature review and a series of focus groups to determine a hypthosized set of "experiences" thought to be the most important to patients on acute psychiatric hospital units.
+
+An initial 32 item survey was developed hypotheseizing 5 domains: Treatment effectiveness, Relationship with the Treatment Team, Nursing Presence, Unit Organization, and the Healing Environment. Te initial survey was submitted to a panel of content experts for feedback on coherence and clarity. 28-items were retained based on feedback.
+
+The survey was piloted across five units.The results were used for quality improvement initiatives. A total of **`r nrow(ypix3)`** surveys were collected. An exploratory factor analysis was performed to understand item performance within the hypothesized domains.
+
+## Descriptive Tables
+
+We generate basic descriptive tables of self-reported demographic variables among our final sample. Are the respondent demographics similar to our general hospital population? *Is there significant differences of the average scores across groups?* *What are other potential sources of response bias?* *How should this impact how conclusions on internal and external validity/reliability?*
+
+**note** A full exploratory analysis, including contingency tables is performed in separate analysis
+
+```{r,}
+table1(~Unit + Age + Gender + Race, data = ypixdes)
+
+table1(~ Age + Gender + Race | Unit, data = ypixdes)
+table1(~ Unit + Gender + Race | Age, data = ypixdes)
+table1(~ Unit + Age + Race | Gender, data = ypixdes)
+table1(~ Age + Gender + Unit| Race, data = ypixdes)
+```
+
+To perform our exploratory factor analysis, we limit our dataset to the 28 survey items (scored on a likert scale 1-5). Factor analysis requires numeric, non-null fields. We therefore have to remove or impute missing values. To decide if we remove or impute, we first examine for responses with a high number of missing items. Next, we analyze each question for missing values.
+
+Responses with greater than 5% skipped questions are identified and dropped Analyze items for high missingness
+
+```{r, collapse=TRUE}
+percentmissing<- function(x){sum(is.na(x))/length(x)*100}
+missing<- apply(ypix3,1,percentmissing)
+replacepeople<- subset(ypix3,missing<=5)
+####Total responses after excluding
+nrow(replacepeople)
+
+#once removed check to make sure columns aren't missing too much
+apply(replacepeople,2,percentmissing)
+nrow(replacepeople)
+
+table(missing)
+
+#check columns missing with original data
+#all columns have less than 5% missing responses.
+apply(ypix3,2,percentmissing)
+```
+
+The remaining missing responses are imputed
+
+```{r, include=FALSE}
+#impute
+tempnomiss<- mice(replacepeople)
+nomiss<- complete(tempnomiss,4)
+summary(nomiss)
+nrow(nomiss)
+```
+
+Detect and remove outliers using mahalanobis
+
+```{r}
+mahal<- mahalanobis(nomiss,
+                    colMeans(nomiss),
+                    cov(nomiss,use = "pairwise.complete.obs"))
+plot(mahal)
+hist(mahal)
+
+summary(mahal)
+boxplot(mahal)
+
+#create the cut off score
+cutoff<- qchisq(1-.001,ncol(nomiss))
+ncol(nomiss)
+nrow(nomiss)
+summary(mahal< nomiss)
+
+cutoff
+
+#exclude outliers
+noout<- subset(nomiss,mahal < cutoff)
+nrow(noout)
+```
+
+assess correlation. Items that are too correlated should be examined for removal.
+
+```{r}
+#additivity
+correl<- cor(noout, use = "pairwise.complete.obs")
+symnum(correl)
+```
+
+performing a factor analysis requires us to make certain assumptions about the distribution of the data. We check our assumptions by comparing against a random variable
+
+```{r}
+#assumption set up
+#make a random variable
+random<- rchisq(nrow(noout),5)
+fake<- lm(random~., data = noout)
+standardized<- rstudent(fake)
+fitted<- scale(fake$fitted.values)
+
+#normality
+hist(standardized)
+#linearity
+qqnorm(standardized)
+abline(0,1)
+
+#homogeneity
+plot(fitted,standardized)
+abline(0,0)
+abline(v=0)
+
+
+#correlation adequacy #yes is adequare bc p value is 0
+cortest.bartlett(correl, n=nrow(noout))
+
+#sampling adequacy #MSA >= 0.7
+KMO(correl)
+```
+
+we hypothesize that these items cluster around 5 conceptual categories. We assess for statistical factors using a parallel analysis and scree plot.
+
+``` {r{}}
+#Our hypothesis was 5 factors
+# parallel analysis and scree
+
+nofactors<- fa.parallel(noout,fm="ml",fa="fa")
+sum(nofactors$fa.values>1.0)
+sum(nofactors$fa.values>0.7)
+```
+
+## This EFA indicates a 4 factor model. We perform EFA with oblique rotation. Results are bests formatted in excel. Items are examined for factor loadings \>0.4.
+
+```{r,echo=FALSE}
+#efa with oblique rotation, using four factor
+round1<- fa(noout, nfactors =4, rotate = "oblimin", fm="ml")
+round1
+```
+
+EFA source code credit to StatisticsofDoom on YT :)
